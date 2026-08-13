@@ -8,10 +8,6 @@ permissions:
   contents: write
   issues: read
 
-concurrency:
-  group: aqualegend-source-history-import
-  cancel-in-progress: false
-
 jobs:
   import:
     if: github.event.issue.number == 1 && github.event.comment.body == 'FINALIZE'
@@ -24,7 +20,7 @@ jobs:
       - name: Rebuild verified AquaLegend source-history bundle
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_SHA256: 3d864f18c8d127fcd19d17d5cbb7bd72dfc8424bac061d70579a37ddd355e2d3
+          EXPECTED_SHA256: c0ca6d8c7c54f65ddbf61c83d575acf68d923526678aef1c9762117ca3f8b182
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, os, pathlib, re, subprocess, urllib.request
@@ -74,11 +70,18 @@ jobs:
           out.parent.mkdir(parents=True, exist_ok=True)
           out.write_bytes(data)
           subprocess.run(['git', 'bundle', 'verify', str(out)], check=True)
-          subprocess.run(['git', 'clone', '-q', str(out), '/tmp/aqualegend-history-check'], check=True)
-          tags = subprocess.check_output(['git', '-C', '/tmp/aqualegend-history-check', 'tag'], text=True).split()
+
+          check = pathlib.Path('/tmp/aqualegend-history-check')
+          subprocess.run(['rm', '-rf', str(check)], check=True)
+          subprocess.run(['git', 'clone', '-q', str(out), str(check)], check=True)
+          tags = subprocess.check_output(['git', '-C', str(check), 'tag'], text=True).split()
           wanted = ['2.1.1','2.2.0','2.2.1','2.2.2','2.2.3','2.3.0','2.3.1','2.4.0','2.5.0','2.5.1','2.5.2','2.5.3','2.5.4','2.5.5']
           if tags != wanted:
               raise SystemExit(f'tag verification failed: {tags}')
+
+          remote = f'https://x-access-token:{token}@github.com/{repo}.git'
+          subprocess.run(['git', '-C', str(check), 'remote', 'set-url', 'origin', remote], check=True)
+          subprocess.run(['git', '-C', str(check), 'push', 'origin', '--tags'], check=True)
 
           (root / 'bootstrap' / 'status.txt').write_text(
               'complete\nversions: 2.1.1-2.5.5\ntransport_chunks: ' + str(len(chunks)) + '\nsha256: ' + digest + '\n', encoding='utf-8')
