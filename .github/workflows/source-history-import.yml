@@ -20,7 +20,7 @@ jobs:
       - name: Rebuild verified AquaLegend source-history bundle
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_SHA256: c0ca6d8c7c54f65ddbf61c83d575acf68d923526678aef1c9762117ca3f8b182
+          EXPECTED_SHA256: 67bb1497512e6d7a68a4dabb57f257b314cd2c557bbb5702d7accf98f017d864
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, os, pathlib, re, subprocess, urllib.request
