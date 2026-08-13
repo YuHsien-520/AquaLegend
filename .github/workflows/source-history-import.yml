@@ -10,83 +10,57 @@ permissions:
 
 jobs:
   import:
-    if: github.event.issue.number == 1 && github.event.comment.body == 'FINALIZE'
+    if: github.event.issue.number == 1 && github.event.comment.body == 'FINALIZE_U15'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Rebuild verified AquaLegend source-history bundle
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA256: 67bb1497512e6d7a68a4dabb57f257b314cd2c557bbb5702d7accf98f017d864
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json, os, pathlib, re, subprocess, urllib.request
-
-          repo = os.environ['GITHUB_REPOSITORY']
-          token = os.environ['GH_TOKEN']
-          comments = []
-          page = 1
+          import hashlib, json, os, pathlib, re, subprocess, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']
+          comments=[]; page=1
           while True:
-              req = urllib.request.Request(
-                  f'https://api.github.com/repos/{repo}/issues/1/comments?per_page=100&page={page}',
-                  headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(req) as resp:
-                  batch = json.load(resp)
-              if not batch:
-                  break
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/1/comments?per_page=100&page={page}',headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req) as r: batch=json.load(r)
+              if not batch: break
               comments.extend(batch)
-              if len(batch) < 100:
-                  break
-              page += 1
-
-          chunks = {}
-          pattern = re.compile(r'^BEGIN_CHUNK (\d{4})\s*\n(.*?)\nEND_CHUNK\s*$', re.S)
-          for comment in comments:
-              body = (comment.get('body') or '').strip()
-              m = pattern.match(body)
-              if not m:
-                  continue
-              idx = int(m.group(1))
-              chunks[idx] = ''.join(m.group(2).split())
-
-          if not chunks:
-              raise SystemExit('no source-history transport chunks found')
-          expected_indexes = list(range(max(chunks) + 1))
-          if sorted(chunks) != expected_indexes:
-              raise SystemExit(f'missing chunk indexes: got {sorted(chunks)}')
-
-          encoded = ''.join(chunks[i] for i in expected_indexes)
-          data = base64.b64decode(encoded, validate=True)
-          digest = hashlib.sha256(data).hexdigest()
-          expected = os.environ['EXPECTED_SHA256']
-          if digest != expected:
-              raise SystemExit(f'SHA256 mismatch: {digest} != {expected}')
-
-          root = pathlib.Path('.')
-          out = root / 'bootstrap' / 'AquaLegend-source-history-2.1.1-to-2.5.5.bundle'
-          out.parent.mkdir(parents=True, exist_ok=True)
-          out.write_bytes(data)
-          subprocess.run(['git', 'bundle', 'verify', str(out)], check=True)
-
-          check = pathlib.Path('/tmp/aqualegend-history-check')
-          subprocess.run(['rm', '-rf', str(check)], check=True)
-          subprocess.run(['git', 'clone', '-q', str(out), str(check)], check=True)
-          tags = subprocess.check_output(['git', '-C', str(check), 'tag'], text=True).split()
-          wanted = ['2.1.1','2.2.0','2.2.1','2.2.2','2.2.3','2.3.0','2.3.1','2.4.0','2.5.0','2.5.1','2.5.2','2.5.3','2.5.4','2.5.5']
-          if tags != wanted:
-              raise SystemExit(f'tag verification failed: {tags}')
-
-          remote = f'https://x-access-token:{token}@github.com/{repo}.git'
-          subprocess.run(['git', '-C', str(check), 'remote', 'set-url', 'origin', remote], check=True)
-          subprocess.run(['git', '-C', str(check), 'push', 'origin', '--tags'], check=True)
-
-          (root / 'bootstrap' / 'status.txt').write_text(
-              'complete\nversions: 2.1.1-2.5.5\ntransport_chunks: ' + str(len(chunks)) + '\nsha256: ' + digest + '\n', encoding='utf-8')
+              if len(batch)<100: break
+              page+=1
+          chunks={}; pat=re.compile(r'^BEGIN_U15 (\d{4})\n(.*?)\nEND_U15$',re.S)
+          for c in comments:
+              m=pat.match((c.get('body') or '').strip())
+              if m: chunks[int(m.group(1))]=m.group(2).replace('\n','')
+          if not chunks: raise SystemExit('no U15 chunks')
+          ids=sorted(chunks)
+          if ids!=list(range(ids[-1]+1)): raise SystemExit(f'missing chunks: {ids}')
+          symbols=''.join(chunks[i] for i in ids)
+          acc=0; bits=0; raw=bytearray()
+          for ch in symbols:
+              v=ord(ch)-0x4E00
+              if not (0<=v<32768): raise SystemExit('invalid U15 symbol')
+              acc=(acc<<15)|v; bits+=15
+              while bits>=8:
+                  bits-=8; raw.append((acc>>bits)&255); acc &= (1<<bits)-1 if bits else 0
+          if len(raw)<8: raise SystemExit('short payload')
+          n=int.from_bytes(raw[:8],'big'); data=bytes(raw[8:8+n])
+          if len(data)!=n: raise SystemExit('payload length mismatch')
+          digest=hashlib.sha256(data).hexdigest()
+          if digest!=os.environ['EXPECTED_SHA256']: raise SystemExit(f'SHA256 mismatch {digest}')
+          out=pathlib.Path('bootstrap/AquaLegend-source-history-2.1.1-to-2.5.5.bundle'); out.write_bytes(data)
+          subprocess.run(['git','bundle','verify',str(out)],check=True)
+          check=pathlib.Path('/tmp/aqualegend-history-check'); subprocess.run(['rm','-rf',str(check)],check=True); subprocess.run(['git','clone','-q',str(out),str(check)],check=True)
+          wanted=['2.1.1','2.2.0','2.2.1','2.2.2','2.2.3','2.3.0','2.3.1','2.4.0','2.5.0','2.5.1','2.5.2','2.5.3','2.5.4','2.5.5']
+          tags=subprocess.check_output(['git','-C',str(check),'tag'],text=True).split()
+          if tags!=wanted: raise SystemExit(f'tag verification failed: {tags}')
+          remote=f'https://x-access-token:{token}@github.com/{repo}.git'; subprocess.run(['git','-C',str(check),'remote','set-url','origin',remote],check=True); subprocess.run(['git','-C',str(check),'push','origin','--tags'],check=True)
+          pathlib.Path('bootstrap/status.txt').write_text('complete\nversions: 2.1.1-2.5.5\ntransport: U15\nchunks: '+str(len(chunks))+'\nsha256: '+digest+'\n',encoding='utf-8')
           PY
-
           git config user.name 'AquaLegend Archive Bot'
           git config user.email 'archive@aqualegend.local'
           git pull --rebase origin main
