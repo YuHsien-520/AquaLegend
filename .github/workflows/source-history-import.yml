@@ -1,12 +1,12 @@
 name: AquaLegend source history import
 
 on:
-  issues:
-    types: [opened]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
-  issues: write
+  issues: read
 
 concurrency:
   group: aqualegend-source-history-import
@@ -14,64 +14,79 @@ concurrency:
 
 jobs:
   import:
-    if: startsWith(github.event.issue.title, '[AL-HISTORY ')
+    if: github.event.issue.number == 1 && github.event.comment.body == 'FINALIZE'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Import source-history transport issue
+      - name: Rebuild verified AquaLegend source-history bundle
         env:
+          GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA256: 3d864f18c8d127fcd19d17d5cbb7bd72dfc8424bac061d70579a37ddd355e2d3
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json, os, pathlib, re, subprocess
+          import base64, hashlib, json, os, pathlib, re, subprocess, urllib.request
 
-          event = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-          issue = event['issue']
-          title = issue['title']
-          body = issue.get('body') or ''
-          root = pathlib.Path('.')
-          chunks = root / 'bootstrap' / '.history-chunks'
-          chunks.mkdir(parents=True, exist_ok=True)
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          comments = []
+          page = 1
+          while True:
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/issues/1/comments?per_page=100&page={page}',
+                  headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(req) as resp:
+                  batch = json.load(resp)
+              if not batch:
+                  break
+              comments.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
 
-          if title == '[AL-HISTORY FINALIZE]':
-              files = sorted(chunks.glob('chunk-*.bin'))
-              if not files:
-                  raise SystemExit('no source-history chunks found')
-              data = b''.join(p.read_bytes() for p in files)
-              digest = hashlib.sha256(data).hexdigest()
-              expected = os.environ['EXPECTED_SHA256']
-              if digest != expected:
-                  raise SystemExit(f'SHA256 mismatch: {digest} != {expected}')
-              out = root / 'bootstrap' / 'AquaLegend-source-history-2.1.1-to-2.5.5.bundle'
-              out.write_bytes(data)
-              subprocess.run(['git', 'bundle', 'verify', str(out)], check=True)
-              for p in files:
-                  p.unlink()
-              try:
-                  chunks.rmdir()
-              except OSError:
-                  pass
-              (root / 'bootstrap' / 'status.txt').write_text(
-                  'complete\nversions: 2.1.1-2.5.5\nsha256: ' + digest + '\n', encoding='utf-8')
-          else:
-              match = re.fullmatch(r'\[AL-HISTORY (\d{4})\]', title)
-              if not match:
-                  raise SystemExit('invalid source-history issue title')
-              m = re.search(r'BEGIN_BASE64\s*(.*?)\s*END_BASE64', body, re.S)
+          chunks = {}
+          pattern = re.compile(r'^BEGIN_CHUNK (\d{4})\s*\n(.*?)\nEND_CHUNK\s*$', re.S)
+          for comment in comments:
+              body = (comment.get('body') or '').strip()
+              m = pattern.match(body)
               if not m:
-                  raise SystemExit('missing Base64 markers')
-              encoded = ''.join(m.group(1).split())
-              data = base64.b64decode(encoded, validate=True)
-              (chunks / f'chunk-{match.group(1)}.bin').write_bytes(data)
+                  continue
+              idx = int(m.group(1))
+              chunks[idx] = ''.join(m.group(2).split())
+
+          if not chunks:
+              raise SystemExit('no source-history transport chunks found')
+          expected_indexes = list(range(max(chunks) + 1))
+          if sorted(chunks) != expected_indexes:
+              raise SystemExit(f'missing chunk indexes: got {sorted(chunks)}')
+
+          encoded = ''.join(chunks[i] for i in expected_indexes)
+          data = base64.b64decode(encoded, validate=True)
+          digest = hashlib.sha256(data).hexdigest()
+          expected = os.environ['EXPECTED_SHA256']
+          if digest != expected:
+              raise SystemExit(f'SHA256 mismatch: {digest} != {expected}')
+
+          root = pathlib.Path('.')
+          out = root / 'bootstrap' / 'AquaLegend-source-history-2.1.1-to-2.5.5.bundle'
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_bytes(data)
+          subprocess.run(['git', 'bundle', 'verify', str(out)], check=True)
+          subprocess.run(['git', 'clone', '-q', str(out), '/tmp/aqualegend-history-check'], check=True)
+          tags = subprocess.check_output(['git', '-C', '/tmp/aqualegend-history-check', 'tag'], text=True).split()
+          wanted = ['2.1.1','2.2.0','2.2.1','2.2.2','2.2.3','2.3.0','2.3.1','2.4.0','2.5.0','2.5.1','2.5.2','2.5.3','2.5.4','2.5.5']
+          if tags != wanted:
+              raise SystemExit(f'tag verification failed: {tags}')
+
+          (root / 'bootstrap' / 'status.txt').write_text(
+              'complete\nversions: 2.1.1-2.5.5\ntransport_chunks: ' + str(len(chunks)) + '\nsha256: ' + digest + '\n', encoding='utf-8')
           PY
 
           git config user.name 'AquaLegend Archive Bot'
           git config user.email 'archive@aqualegend.local'
           git pull --rebase origin main
-          git add -A bootstrap
-          git diff --cached --quiet && exit 0
-          git commit -m "archive: import ${GITHUB_EVENT_NAME} source-history payload"
+          git add bootstrap/AquaLegend-source-history-2.1.1-to-2.5.5.bundle bootstrap/status.txt
+          git commit -m 'archive: add complete AquaLegend source history 2.1.1-2.5.5'
           git push origin HEAD:main
