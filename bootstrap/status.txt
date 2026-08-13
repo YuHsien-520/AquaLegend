@@ -1,1 +1,5 @@
-upload in progress
+uploading
+versions: 2.1.1-2.5.5
+transport: U15
+expected_chunks: 25
+sha256: 67bb1497512e6d7a68a4dabb57f257b314cd2c557bbb5702d7accf98f017d864
